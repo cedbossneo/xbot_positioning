@@ -171,28 +171,9 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
 }
 
 void onWheelTicks(const xbot_msgs::WheelTick::ConstPtr &msg) {
-    if(!has_ticks) {
-        last_ticks = *msg;
-        has_ticks = true;
-        return;
-    }
-    double dt = (msg->stamp - last_ticks.stamp).toSec();
-
-    double d_wheel_l = (double) (msg->wheel_ticks_rl - last_ticks.wheel_ticks_rl) * (1/(double)msg->wheel_tick_factor);
-    double d_wheel_r = (double) (msg->wheel_ticks_rr - last_ticks.wheel_ticks_rr) * (1/(double)msg->wheel_tick_factor);
-
-    if(msg->wheel_direction_rl) {
-        d_wheel_l *= -1.0;
-    }
-    if(msg->wheel_direction_rr) {
-        d_wheel_r *= -1.0;
-    }
-
-
-    double d_ticks = (d_wheel_l + d_wheel_r) / 2.0;
-    vx = d_ticks / dt;
-
     last_ticks = *msg;
+    has_ticks = true;
+    vx = ((double)msg->wheel_ticks_fl + (double)msg->wheel_ticks_fr) / 2.0 / (double)msg->wheel_tick_factor;
 }
 
 bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::GPSControlSrvResponse &res) {
