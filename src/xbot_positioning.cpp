@@ -10,10 +10,10 @@
 #include <sensor_msgs/Imu.h>
 #include <nav_msgs/Odometry.h>
 #include "xbot_msgs/AbsolutePose.h"
-#include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <sensor_msgs/NavSatFix.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
-#include <tf2_ros/transform_listener.h>
 #include "geometry_msgs/PoseWithCovarianceStamped.h"
 #include "geometry_msgs/TwistWithCovarianceStamped.h"
 #include "xbot_positioning_core.h"
@@ -23,6 +23,7 @@
 #include "xbot_positioning/SetPoseSrv.h"
 
 ros::Publisher odometry_pub;
+ros::Publisher fix_pub;
 ros::Publisher xbot_absolute_pose_pub;
 
 // Debug Publishers
@@ -117,17 +118,6 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     tf2::Quaternion q(0.0, 0.0, x.theta());
     odometry.pose.pose.orientation = tf2::toMsg(q);
 
-    geometry_msgs::TransformStamped odom_trans;
-    odom_trans.header = odometry.header;
-    odom_trans.child_frame_id = odometry.child_frame_id;
-    odom_trans.transform.translation.x = odometry.pose.pose.position.x;
-    odom_trans.transform.translation.y = odometry.pose.pose.position.y;
-    odom_trans.transform.translation.z = odometry.pose.pose.position.z;
-    odom_trans.transform.rotation = odometry.pose.pose.orientation;
-
-    static tf2_ros::TransformBroadcaster transform_broadcaster;
-    transform_broadcaster.sendTransform(odom_trans);
-
     if(publish_debug) {
         auto state = core.getState();
         state_msg.x = state.x();
@@ -140,36 +130,6 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     }
 
     odometry_pub.publish(odometry);
-
-    xb_absolute_pose_msg.header = odometry.header;
-    xb_absolute_pose_msg.sensor_stamp = 0;
-    xb_absolute_pose_msg.received_stamp = 0;
-    xb_absolute_pose_msg.source = xbot_msgs::AbsolutePose::SOURCE_SENSOR_FUSION;
-    xb_absolute_pose_msg.flags = xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_DEAD_RECKONING;
-
-    xb_absolute_pose_msg.orientation_valid = true;
-    // TODO: send motion vector
-    xb_absolute_pose_msg.motion_vector_valid = false;
-    // TODO: set real value from kalman filter, not the one from the GPS.
-    if(has_gps) {
-        xb_absolute_pose_msg.position_accuracy = last_gps.position_accuracy;
-    } else {
-        xb_absolute_pose_msg.position_accuracy = 999;
-    }
-    if((ros::Time::now() - last_gps_time).toSec() < 10.0) {
-        xb_absolute_pose_msg.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE;
-    } else {
-        // on GPS timeout, we set accuracy to 0.
-        xb_absolute_pose_msg.position_accuracy = 999;
-    }
-    // TODO: set real value
-    xb_absolute_pose_msg.orientation_accuracy = 0.01;
-    xb_absolute_pose_msg.pose = odometry.pose;
-    xb_absolute_pose_msg.vehicle_heading = x.theta();
-    xb_absolute_pose_msg.motion_heading = x.theta();
-
-    xbot_absolute_pose_pub.publish(xb_absolute_pose_msg);
-
 
     last_imu = *msg;
 }
@@ -217,16 +177,49 @@ bool setPose(xbot_positioning::SetPoseSrvRequest &req, xbot_positioning::SetPose
     return true;
 }
 
+void onTrackedPose(const geometry_msgs::PoseStamped::ConstPtr &pose_stamped) {
+    xb_absolute_pose_msg.header = pose_stamped->header;
+    xb_absolute_pose_msg.sensor_stamp = 0;
+    xb_absolute_pose_msg.received_stamp = 0;
+    xb_absolute_pose_msg.source = xbot_msgs::AbsolutePose::SOURCE_SENSOR_FUSION;
+    xb_absolute_pose_msg.flags = xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_DEAD_RECKONING;
+
+    xb_absolute_pose_msg.orientation_valid = true;
+    // TODO: send motion vector
+    xb_absolute_pose_msg.motion_vector_valid = false;
+    // TODO: set real value from kalman filter, not the one from the GPS.
+    if(has_gps) {
+        xb_absolute_pose_msg.position_accuracy = last_gps.position_accuracy;
+    } else {
+        xb_absolute_pose_msg.position_accuracy = 999;
+    }
+    if((ros::Time::now() - last_gps_time).toSec() < 10.0) {
+        xb_absolute_pose_msg.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE;
+    } else {
+        // on GPS timeout, we set accuracy to 0.
+        xb_absolute_pose_msg.position_accuracy = 999;
+    }
+    // TODO: set real value
+    xb_absolute_pose_msg.orientation_accuracy = 0.01;
+    geometry_msgs::PoseWithCovariance pose_with_covariance;
+    pose_with_covariance.pose = pose_stamped->pose;
+    xb_absolute_pose_msg.pose = pose_with_covariance;
+    xb_absolute_pose_msg.vehicle_heading = odometry.pose.pose.orientation.z;
+    xb_absolute_pose_msg.motion_heading = odometry.pose.pose.orientation.z;
+
+    xbot_absolute_pose_pub.publish(xb_absolute_pose_msg);
+}
+
 void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
     if(!gps_enabled) {        
         ROS_INFO_STREAM_THROTTLE(gps_message_throttle, "dropping GPS update, since gps_enabled = false.");
         return;
     }
     // TODO fuse with high covariance?
-    if((msg->flags & (xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) == 0) {
+    /*if((msg->flags & (xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) == 0) {
         ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed");
         return;
-    }
+    }*/
 
     if(msg->position_accuracy > max_gps_accuracy) {
         ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not accurate enough. Accuracy was: " << msg->position_accuracy << ", limit is:" << max_gps_accuracy);
@@ -346,6 +339,7 @@ int main(int argc, char **argv) {
         kalman_state = paramNh.advertise<xbot_positioning::KalmanState>("kalman_state", 50);
     }
 
+    ros::Subscriber tracked_pose_sub = paramNh.subscribe("tracked_pose", 10, onTrackedPose);
     ros::Subscriber imu_sub = paramNh.subscribe("imu_in", 10, onImu);
     ros::Subscriber pose_sub = paramNh.subscribe("xb_pose_in", 10, onPose);
     ros::Subscriber wheel_tick_sub = paramNh.subscribe("wheel_ticks_in", 10, onWheelTicks);
