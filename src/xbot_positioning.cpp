@@ -219,7 +219,6 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
     last_fix.header.stamp = ros::Time::now();
     last_fix.header.seq++;
     last_fix.header.frame_id = "map";
-    last_fix.child_frame_id = "base_link";
     last_fix.status.status = sensor_msgs::NavSatStatus::STATUS_GBAS_FIX;
     if((msg->flags & (xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) == 0) {
         last_fix.status.status = sensor_msgs::NavSatStatus::STATUS_NO_FIX;
@@ -252,19 +251,24 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         gps_outlier_count = 0;
         valid_gps_samples++;
 
+        last_fix.position_covariance_type = sensor_msgs::NavSatFix::COVARIANCE_TYPE_APPROXIMATED;
         if (!has_gps && valid_gps_samples > 10) {
             ROS_INFO_STREAM("GPS data now valid");
             ROS_INFO_STREAM("First GPS data, moving kalman filter to " << msg->pose.pose.position.x << ", " << msg->pose.pose.position.y);
             last_fix.longitude = msg->pose.pose.position.x;
             last_fix.latitude = msg->pose.pose.position.y;
             last_fix.altitude = msg->pose.pose.position.z;
-            last_fix.position_covariance = msg->pose.covariance;
+            last_fix.position_covariance[0] = msg->position_accuracy * msg->position_accuracy;
+            last_fix.position_covariance[4] = msg->position_accuracy * msg->position_accuracy;
+            last_fix.position_covariance[8] = msg->position_accuracy * msg->position_accuracy;
             has_gps = true;
         } else if (has_gps) {
             last_fix.longitude = msg->pose.pose.position.x;
             last_fix.latitude = msg->pose.pose.position.y;
             last_fix.altitude = msg->pose.pose.position.z;
-            last_fix.position_covariance = msg->pose.covariance;
+            last_fix.position_covariance[0] = msg->position_accuracy * msg->position_accuracy;
+            last_fix.position_covariance[4] = msg->position_accuracy * msg->position_accuracy;
+            last_fix.position_covariance[8] = msg->position_accuracy * msg->position_accuracy;
         }
     } else {
         ROS_WARN_STREAM("GPS outlier found. Distance was: " << distance_to_last_gps);
