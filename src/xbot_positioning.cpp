@@ -41,6 +41,7 @@ bool has_ticks;
 xbot_msgs::WheelTick last_ticks;
 bool has_gps;
 xbot_msgs::AbsolutePose last_gps;
+sensor_msgs::NavSatFix last_fix;
 
 // True, if last_imu is valid and gyro_offset is valid
 bool has_gyro;
@@ -204,8 +205,8 @@ void onTrackedPose(const geometry_msgs::PoseStamped::ConstPtr &pose_stamped) {
     geometry_msgs::PoseWithCovariance pose_with_covariance;
     pose_with_covariance.pose = pose_stamped->pose;
     xb_absolute_pose_msg.pose = pose_with_covariance;
-    xb_absolute_pose_msg.vehicle_heading = odometry.pose.pose.orientation.z;
-    xb_absolute_pose_msg.motion_heading = odometry.pose.pose.orientation.z;
+    xb_absolute_pose_msg.vehicle_heading = pose_stamped->pose.orientation.z;
+    xb_absolute_pose_msg.motion_heading = pose_stamped->pose.orientation.z;
 
     xbot_absolute_pose_pub.publish(xb_absolute_pose_msg);
 }
@@ -215,16 +216,15 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         ROS_INFO_STREAM_THROTTLE(gps_message_throttle, "dropping GPS update, since gps_enabled = false.");
         return;
     }
-    // TODO fuse with high covariance?
+    last_fix.header.stamp = ros::Time::now();
+    last_fix.header.seq++;
+    last_fix.header.frame_id = "map";
+    last_fix.child_frame_id = "base_link";
+    last_fix.status.status = sensor_msgs::NavSatStatus::STATUS_GBAS_FIX;
     if((msg->flags & (xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) == 0) {
-        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed");
-        return;
+        last_fix.status.status = sensor_msgs::NavSatStatus::STATUS_NO_FIX;
     }
-
-    if(msg->position_accuracy > max_gps_accuracy) {
-        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not accurate enough. Accuracy was: " << msg->position_accuracy << ", limit is:" << max_gps_accuracy);
-        return;
-    }
+    last_fix.status.service = sensor_msgs::NavSatStatus::SERVICE_GALILEO;
 
     double time_since_last_gps = (ros::Time::now() - last_gps_time).toSec();
     if (time_since_last_gps > 5.0) {
@@ -255,23 +255,16 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         if (!has_gps && valid_gps_samples > 10) {
             ROS_INFO_STREAM("GPS data now valid");
             ROS_INFO_STREAM("First GPS data, moving kalman filter to " << msg->pose.pose.position.x << ", " << msg->pose.pose.position.y);
-            // we don't even have gps yet, set odometry to first estimate
-            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, 0.001);
-
+            last_fix.longitude = msg->pose.pose.position.x;
+            last_fix.latitude = msg->pose.pose.position.y;
+            last_fix.altitude = msg->pose.pose.position.z;
+            last_fix.position_covariance = msg->pose.covariance;
             has_gps = true;
         } else if (has_gps) {
-            // gps was valid before, we apply the filter
-            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, 500.0);
-            if(publish_debug) {
-                auto m = core.om2.h(core.ekf.getState());
-                geometry_msgs::Vector3 dbg;
-                dbg.x = m.vx();
-                dbg.y = m.vy();
-                dbg_expected_motion_vector.publish(dbg);
-            }
-            if(std::sqrt(std::pow(msg->motion_vector.x, 2)+std::pow(msg->motion_vector.y, 2)) >= min_speed) {
-                core.updateOrientation2(msg->motion_vector.x, msg->motion_vector.y, 10000.0);
-            }
+            last_fix.longitude = msg->pose.pose.position.x;
+            last_fix.latitude = msg->pose.pose.position.y;
+            last_fix.altitude = msg->pose.pose.position.z;
+            last_fix.position_covariance = msg->pose.covariance;
         }
     } else {
         ROS_WARN_STREAM("GPS outlier found. Distance was: " << distance_to_last_gps);
@@ -288,9 +281,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
             gps_outlier_count = 0;
         }
     }
-
-
-
+    fix_pub.publish(last_fix);
 }
 
 int main(int argc, char **argv) {
@@ -333,6 +324,7 @@ int main(int argc, char **argv) {
     }
 
     odometry_pub = paramNh.advertise<nav_msgs::Odometry>("odom_out", 50);
+    fix_pub = paramNh.advertise<sensor_msgs::NavSatFix>("fix_out", 50);
     xbot_absolute_pose_pub = paramNh.advertise<xbot_msgs::AbsolutePose>("xb_pose_out", 50);
     if(publish_debug) {
         dbg_expected_motion_vector = paramNh.advertise<geometry_msgs::Vector3>("debug_expected_motion_vector", 50);
