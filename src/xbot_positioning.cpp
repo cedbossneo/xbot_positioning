@@ -208,14 +208,65 @@ void onTrackedPose(const geometry_msgs::PoseStamped::ConstPtr &pose_stamped) {
     xb_absolute_pose_msg.vehicle_heading = pose_stamped->pose.orientation.z;
     xb_absolute_pose_msg.motion_heading = pose_stamped->pose.orientation.z;
 
+    core.updatePosition(pose_stamped->pose.position.x, pose_stamped->pose.position.y, 500.0);
     xbot_absolute_pose_pub.publish(xb_absolute_pose_msg);
 }
 
+// Constants for WGS84
+const double a = 6378137.0; // semi-major axis in meters
+const double b = 6356752.314245; // semi-minor axis in meters
+const double e_sq = (a * a - b * b) / (a * a); // square of eccentricity
+const double e_prime_sq = (a * a - b * b) / (b * b); // secondary eccentricity
+
+void geodeticToECEF(double lat, double lon, double alt, double &X, double &Y, double &Z) {
+    double lat_rad = lat * M_PI / 180.0;
+    double lon_rad = lon * M_PI / 180.0;
+
+    double N = a / sqrt(1 - e_sq * pow(sin(lat_rad), 2));
+
+    X = (N + alt) * cos(lat_rad) * cos(lon_rad);
+    Y = (N + alt) * cos(lat_rad) * sin(lon_rad);
+    Z = (N * (1 - e_sq) + alt) * sin(lat_rad);
+}
+
+void ecefToGeodetic(double X, double Y, double Z, double &lat, double &lon) {
+    double p = sqrt(X * X + Y * Y);
+    double theta = atan2(Z * a, p * b);
+
+    lon = atan2(Y, X);
+    lat = atan2(Z + e_prime_sq * b * pow(sin(theta), 3), p - e_sq * a * pow(cos(theta), 3));
+
+    lat = lat * 180.0 / M_PI;
+    lon = lon * 180.0 / M_PI;
+}
+
 void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
-    if(!gps_enabled) {        
+// Datum point (latitude, longitude, altitude)
+    double datum_lat = 48.8831951; // example latitude
+    double datum_lon = 2.1661984; // example longitude
+    double datum_alt = 0; // example altitude
+
+    // Convert datum point to ECEF
+    double datum_x, datum_y, datum_z;
+    geodeticToECEF(datum_lat, datum_lon, datum_alt, datum_x, datum_y, datum_z);
+
+    // Relative position in meters (x, y, z)
+    double rel_x = msg->pose.pose.position.x;
+    double rel_y = msg->pose.pose.position.y;
+    double rel_z = msg->pose.pose.position.z;
+
+    // New ECEF coordinates
+    double new_x = datum_x + rel_x;
+    double new_y = datum_y + rel_y;
+    double new_z = datum_z + rel_z;
+
+    // Convert new ECEF coordinates back to geodetic coordinates
+    double new_lat, new_lon;
+    ecefToGeodetic(new_x, new_y, new_z, new_lat, new_lon);
+   /* if(!gps_enabled) {
         ROS_INFO_STREAM_THROTTLE(gps_message_throttle, "dropping GPS update, since gps_enabled = false.");
         return;
-    }
+    }*/
     last_fix.header.stamp = ros::Time::now();
     last_fix.header.seq++;
     last_fix.header.frame_id = "map";
@@ -255,16 +306,16 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         if (!has_gps && valid_gps_samples > 10) {
             ROS_INFO_STREAM("GPS data now valid");
             ROS_INFO_STREAM("First GPS data, moving kalman filter to " << msg->pose.pose.position.x << ", " << msg->pose.pose.position.y);
-            last_fix.longitude = msg->pose.pose.position.x;
-            last_fix.latitude = msg->pose.pose.position.y;
+            last_fix.longitude = new_lon;
+            last_fix.latitude = new_lat;
             last_fix.altitude = msg->pose.pose.position.z;
             last_fix.position_covariance[0] = msg->position_accuracy * msg->position_accuracy;
             last_fix.position_covariance[4] = msg->position_accuracy * msg->position_accuracy;
             last_fix.position_covariance[8] = msg->position_accuracy * msg->position_accuracy;
             has_gps = true;
         } else if (has_gps) {
-            last_fix.longitude = msg->pose.pose.position.x;
-            last_fix.latitude = msg->pose.pose.position.y;
+            last_fix.longitude = new_lon;
+            last_fix.latitude = new_lat;
             last_fix.altitude = msg->pose.pose.position.z;
             last_fix.position_covariance[0] = msg->position_accuracy * msg->position_accuracy;
             last_fix.position_covariance[4] = msg->position_accuracy * msg->position_accuracy;
@@ -335,7 +386,7 @@ int main(int argc, char **argv) {
         kalman_state = paramNh.advertise<xbot_positioning::KalmanState>("kalman_state", 50);
     }
 
-    ros::Subscriber tracked_pose_sub = paramNh.subscribe("tracked_pose", 10, onTrackedPose);
+    ros::Subscriber tracked_pose_sub = paramNh.subscribe("/tracked_pose", 10, onTrackedPose);
     ros::Subscriber imu_sub = paramNh.subscribe("imu_in", 10, onImu);
     ros::Subscriber pose_sub = paramNh.subscribe("xb_pose_in", 10, onPose);
     ros::Subscriber wheel_tick_sub = paramNh.subscribe("wheel_ticks_in", 10, onWheelTicks);
