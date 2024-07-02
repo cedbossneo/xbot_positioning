@@ -24,6 +24,7 @@
 
 ros::Publisher odometry_pub;
 ros::Publisher fix_pub;
+ros::Publisher imu_pub;
 ros::Publisher xbot_absolute_pose_pub;
 
 // Debug Publishers
@@ -133,6 +134,15 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     odometry_pub.publish(odometry);
 
     last_imu = *msg;
+    // Publish calibrated imu to imu_out
+    sensor_msgs::Imu imu_out = *msg;
+    // TODO(damonkohler): This relies on the z-axis alignment of the
+    // IMU with the Kobuki base.
+    imu_out.angular_velocity.z = msg->angular_velocity.z - gyro_offset;
+    imu_out.linear_acceleration.x = 0.;
+    imu_out.linear_acceleration.y = 0.;
+    imu_out.linear_acceleration.z = 9.8;
+    imu_pub.publish(imu_out);
 }
 
 void onWheelTicks(const xbot_msgs::WheelTick::ConstPtr &msg) {
@@ -156,6 +166,11 @@ void onWheelTicks(const xbot_msgs::WheelTick::ConstPtr &msg) {
 
     double d_ticks = (d_wheel_l + d_wheel_r) / 2.0;
     vx = d_ticks / dt;
+    if(abs(vx) > 0.6) {
+        ROS_WARN_STREAM("got vx > 0.6 (" << vx << ") - dropping measurement");
+        vx = 0.0;
+        return;
+    }
 
     last_ticks = *msg;
 }
@@ -269,7 +284,7 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
     }*/
     last_fix.header.stamp = ros::Time::now();
     last_fix.header.seq++;
-    last_fix.header.frame_id = "map";
+    last_fix.header.frame_id = "base_link";
     last_fix.status.status = sensor_msgs::NavSatStatus::STATUS_GBAS_FIX;
     if((msg->flags & (xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) == 0) {
         last_fix.status.status = sensor_msgs::NavSatStatus::STATUS_NO_FIX;
@@ -379,6 +394,7 @@ int main(int argc, char **argv) {
     }
 
     odometry_pub = paramNh.advertise<nav_msgs::Odometry>("odom_out", 50);
+    imu_pub = paramNh.advertise<sensor_msgs::Imu>("imu_out", 50);
     fix_pub = paramNh.advertise<sensor_msgs::NavSatFix>("fix_out", 50);
     xbot_absolute_pose_pub = paramNh.advertise<xbot_msgs::AbsolutePose>("xb_pose_out", 50);
     if(publish_debug) {
