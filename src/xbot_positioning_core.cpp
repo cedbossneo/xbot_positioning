@@ -65,6 +65,24 @@ xbot::positioning::xbot_positioning_core::updateSpeed(double vx, double vr, doub
     return ekf.update(sm, speed_m);
 }
 
+const xbot::positioning::StateT &
+xbot::positioning::xbot_positioning_core::updateLidarOdometry(double x, double y, double theta,
+                                                               double cov_x, double cov_y, double cov_theta) {
+    lidar_m.x_pos() = x;
+    lidar_m.y_pos() = y;
+    lidar_m.theta() = theta;
+
+    Kalman::Covariance<LidarOdometryMeasurementT> c;
+    c.setZero();
+    c(0, 0) = cov_x;
+    c(1, 1) = cov_y;
+    c(2, 2) = cov_theta;
+
+    lm.setCovariance(c);
+
+    return ekf.update(lm, lidar_m);
+}
+
 const xbot::positioning::StateT &xbot::positioning::xbot_positioning_core::getState() {
     return ekf.getState();
 }
@@ -98,5 +116,10 @@ void xbot::positioning::xbot_positioning_core::setState(double px, double py, do
 void xbot::positioning::xbot_positioning_core::setAntennaOffset(double offset_x, double offset_y) {
     pm.antenna_offset_x = om2.antenna_offset_x = offset_x;
     pm.antenna_offset_y = om2.antenna_offset_y = offset_y;
+}
+
+void xbot::positioning::xbot_positioning_core::setLidarOffset(double offset_x, double offset_y) {
+    lm.lidar_offset_x = offset_x;
+    lm.lidar_offset_y = offset_y;
 }
 

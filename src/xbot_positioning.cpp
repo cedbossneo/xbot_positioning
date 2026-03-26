@@ -3,6 +3,7 @@
 // Copyright (c) 2022 Clemens Elflein. All rights reserved.
 //
 
+#include <cmath>
 #include <geometry_msgs/TwistStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Imu.h>
@@ -74,6 +75,18 @@ int gps_message_throttle = 1;
 
 ros::Time last_gps_time(0.0);
 
+// TF broadcasting (disable when SLAM provides map->base_link chain)
+bool publish_tf = true;
+
+// LiDAR odometry integration
+bool enable_lidar_odom = false;
+ros::Time last_lidar_odom_time(0.0);
+double lidar_timeout = 3.0;
+double gps_float_covariance = 50000.0;
+
+bool isLidarActive() {
+    return enable_lidar_odom && (ros::Time::now() - last_lidar_odom_time).toSec() < lidar_timeout;
+}
 
 void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     if (!has_gyro) {
@@ -117,6 +130,21 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     tf2::Quaternion q(0.0, 0.0, x.theta());
     odometry.pose.pose.orientation = tf2::toMsg(q);
 
+    // Fill odometry covariance from EKF (6x6: x, y, z, roll, pitch, yaw)
+    {
+        auto P = core.getCovariance();
+        odometry.pose.covariance.fill(0);
+        odometry.pose.covariance[0]  = P(0, 0); // x-x
+        odometry.pose.covariance[1]  = P(0, 1); // x-y
+        odometry.pose.covariance[5]  = P(0, 2); // x-yaw
+        odometry.pose.covariance[6]  = P(1, 0); // y-x
+        odometry.pose.covariance[7]  = P(1, 1); // y-y
+        odometry.pose.covariance[11] = P(1, 2); // y-yaw
+        odometry.pose.covariance[30] = P(2, 0); // yaw-x
+        odometry.pose.covariance[31] = P(2, 1); // yaw-y
+        odometry.pose.covariance[35] = P(2, 2); // yaw-yaw
+    }
+
     geometry_msgs::TransformStamped odom_trans;
     odom_trans.header = odometry.header;
     odom_trans.child_frame_id = odometry.child_frame_id;
@@ -125,8 +153,10 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     odom_trans.transform.translation.z = odometry.pose.pose.position.z;
     odom_trans.transform.rotation = odometry.pose.pose.orientation;
 
-    static tf2_ros::TransformBroadcaster transform_broadcaster;
-    transform_broadcaster.sendTransform(odom_trans);
+    if (publish_tf) {
+        static tf2_ros::TransformBroadcaster transform_broadcaster;
+        transform_broadcaster.sendTransform(odom_trans);
+    }
 
     if (publish_debug) {
         auto state = core.getState();
@@ -150,25 +180,63 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     xb_absolute_pose_msg.orientation_valid = true;
     // TODO: send motion vector
     xb_absolute_pose_msg.motion_vector_valid = false;
-    // TODO: set real value from kalman filter, not the one from the GPS.
+
+    // Position accuracy: pass through GPS receiver accuracy
     if (has_gps) {
         xb_absolute_pose_msg.position_accuracy = last_gps.position_accuracy;
     } else {
         xb_absolute_pose_msg.position_accuracy = 999;
     }
+
+    // Flag: recent absolute pose if GPS or LiDAR is providing corrections
     if ((ros::Time::now() - last_gps_time).toSec() < 10.0) {
         xb_absolute_pose_msg.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE;
     } else {
-        // on GPS timeout, we set accuracy to 0.
         xb_absolute_pose_msg.position_accuracy = 999;
     }
-    // TODO: set real value
-    xb_absolute_pose_msg.orientation_accuracy = 0.01;
+
+    // When LiDAR is actively providing corrections, derive accuracy from
+    // EKF covariance ratio: how much has the fused uncertainty improved
+    // relative to the prediction-only baseline.
+    // This reflects real LiDAR quality: good SLAM match → low ratio → good accuracy,
+    // poor match (rejected updates) → ratio stays near 1 → GPS accuracy unchanged.
+    if (isLidarActive()) {
+        xb_absolute_pose_msg.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE;
+
+        // EKF covariance reflects fusion quality in internal units.
+        // Normalize: GPS-only steady-state variance is ~gps_cov (measurement noise
+        // dominates). With LiDAR fused, variance drops proportionally.
+        // Map the ratio to GPS receiver's accuracy scale.
+        auto P = core.getCovariance();
+        double var_xy = P(xbot::positioning::State<double>::X, xbot::positioning::State<double>::X)
+                      + P(xbot::positioning::State<double>::Y, xbot::positioning::State<double>::Y);
+        // Baseline: GPS-only variance at current quality level
+        double baseline_var = has_gps ? gps_float_covariance : 50000.0;
+        if (has_gps && (last_gps.flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) {
+            baseline_var = 500.0;
+        }
+        // Ratio < 1 means LiDAR is helping; ratio >= 1 means no improvement
+        double ratio = std::min(1.0, var_xy / (2.0 * baseline_var));
+        // Map to accuracy: GPS accuracy at ratio=1, best possible (0.02m) at ratio→0
+        double gps_acc = has_gps ? (double)last_gps.position_accuracy : 0.5;
+        double lidar_best = 0.02; // best achievable with good SLAM
+        xb_absolute_pose_msg.position_accuracy = lidar_best + ratio * (gps_acc - lidar_best);
+    }
+
+    // Orientation accuracy from EKF covariance
+    {
+        auto P = core.getCovariance();
+        double var_theta = P(xbot::positioning::State<double>::THETA, xbot::positioning::State<double>::THETA);
+        xb_absolute_pose_msg.orientation_accuracy = std::sqrt(var_theta);
+    }
     xb_absolute_pose_msg.pose = odometry.pose;
     xb_absolute_pose_msg.vehicle_heading = x.theta();
     xb_absolute_pose_msg.motion_heading = x.theta();
 
-    xbot_absolute_pose_pub.publish(xb_absolute_pose_msg);
+    // Only emit position when accuracy is within 10cm
+    if (xb_absolute_pose_msg.position_accuracy <= 0.1) {
+        xbot_absolute_pose_pub.publish(xb_absolute_pose_msg);
+    }
 
 
     last_imu = *msg;
@@ -205,6 +273,30 @@ void onTwistIn(const geometry_msgs::TwistStamped::ConstPtr &msg) {
     vx = msg->twist.linear.x;
 }
 
+void onLidarOdom(const nav_msgs::Odometry::ConstPtr &msg) {
+    last_lidar_odom_time = ros::Time::now();
+
+    tf2::Quaternion q;
+    tf2::fromMsg(msg->pose.pose.orientation, q);
+    tf2::Matrix3x3 m(q);
+    double roll, pitch, yaw;
+    m.getRPY(roll, pitch, yaw);
+
+    double cov_x = msg->pose.covariance[0];
+    double cov_y = msg->pose.covariance[7];
+    double cov_theta = msg->pose.covariance[35];
+
+    if (cov_x <= 0) cov_x = 1.0;
+    if (cov_y <= 0) cov_y = 1.0;
+    if (cov_theta <= 0) cov_theta = 1.0;
+
+    core.updateLidarOdometry(msg->pose.pose.position.x, msg->pose.pose.position.y, yaw,
+                             cov_x, cov_y, cov_theta);
+
+    ROS_INFO_STREAM_THROTTLE(5, "LiDAR odometry update applied. Covariance: "
+        << cov_x << ", " << cov_y << ", " << cov_theta);
+}
+
 bool setGpsState(xbot_positioning::GPSControlSrvRequest &req, xbot_positioning::GPSControlSrvResponse &res) {
     gps_enabled = req.gps_enabled;
     return true;
@@ -228,13 +320,13 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
         ROS_INFO_STREAM_THROTTLE(gps_message_throttle, "dropping GPS update, since gps_enabled = false.");
         return;
     }
-    // TODO fuse with high covariance?
-    if ((msg->flags & (xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED)) == 0) {
-        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed");
+    bool is_rtk_fixed = (msg->flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED) != 0;
+    if (!is_rtk_fixed && !isLidarActive()) {
+        ROS_INFO_STREAM_THROTTLE(1, "Dropped GPS update, since it's not RTK Fixed and LiDAR is not active");
         return;
     }
 
-    if (msg->position_accuracy > max_gps_accuracy) {
+    if (msg->position_accuracy > max_gps_accuracy && !isLidarActive()) {
         ROS_INFO_STREAM_THROTTLE(
             1, "Dropped GPS update, since it's not accurate enough. Accuracy was: " << msg->position_accuracy <<
             ", limit is:" << max_gps_accuracy);
@@ -274,12 +366,26 @@ void onPose(const xbot_msgs::AbsolutePose::ConstPtr &msg) {
                 "First GPS data, moving kalman filter to " << msg->pose.pose.position.x << ", " << msg->pose.pose.
                 position.y);
             // we don't even have gps yet, set odometry to first estimate
-            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, 0.001);
+            double init_cov = is_rtk_fixed ? 0.001 : gps_float_covariance;
+            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, init_cov);
 
             has_gps = true;
         } else if (has_gps) {
             // gps was valid before, we apply the filter
-            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, 500.0);
+            double gps_cov;
+            if (is_rtk_fixed) {
+                gps_cov = 500.0;
+            } else if (isLidarActive()) {
+                // LiDAR is providing corrections — use moderate Float covariance
+                // so EKF blends GPS Float + LiDAR instead of ignoring GPS entirely
+                gps_cov = 5000.0;
+            } else {
+                gps_cov = gps_float_covariance;
+            }
+            core.updatePosition(msg->pose.pose.position.x, msg->pose.pose.position.y, gps_cov);
+            if (!is_rtk_fixed) {
+                ROS_INFO_STREAM_THROTTLE(1, "GPS float update applied with covariance: " << gps_cov);
+            }
             if (publish_debug) {
                 auto m = core.om2.h(core.ekf.getState());
                 geometry_msgs::Vector3 dbg;
@@ -338,10 +444,25 @@ int main(int argc, char **argv) {
     paramNh.param("antenna_offset_x", antenna_offset_x, 0.0);
     paramNh.param("antenna_offset_y", antenna_offset_y, 0.0);
     paramNh.param("gps_message_throttle", gps_message_throttle, 1);
+    paramNh.param("enable_lidar_odom", enable_lidar_odom, false);
+    paramNh.param("publish_tf", publish_tf, true);
+    paramNh.param("gps_float_covariance", gps_float_covariance, 50000.0);
+    paramNh.param("lidar_timeout", lidar_timeout, 3.0);
+    std::string lidar_odom_topic;
+    paramNh.param<std::string>("lidar_odom_topic", lidar_odom_topic, "odom_lidar");
+
+    if (enable_lidar_odom) {
+        ROS_INFO_STREAM("LiDAR odometry fusion enabled on topic: " << lidar_odom_topic);
+    }
 
     core.setAntennaOffset(antenna_offset_x, antenna_offset_y);
-
     ROS_INFO_STREAM("Antenna offset: " << antenna_offset_x << ", " << antenna_offset_y);
+
+    double lidar_offset_x = 0.0, lidar_offset_y = 0.0;
+    paramNh.param("lidar_offset_x", lidar_offset_x, 0.0);
+    paramNh.param("lidar_offset_y", lidar_offset_y, 0.0);
+    core.setLidarOffset(lidar_offset_x, lidar_offset_y);
+    ROS_INFO_STREAM("LiDAR offset: " << lidar_offset_x << ", " << lidar_offset_y);
 
     if (gyro_offset != 0.0 && skip_gyro_calibration) {
         ROS_WARN_STREAM("Using gyro offset of: " << gyro_offset);
@@ -358,6 +479,10 @@ int main(int argc, char **argv) {
     ros::Subscriber twist_sub = paramNh.subscribe("twist_in", 10, onTwistIn);
     ros::Subscriber pose_sub = paramNh.subscribe("xb_pose_in", 10, onPose);
     ros::Subscriber wheel_tick_sub = paramNh.subscribe("wheel_ticks_in", 10, onWheelTicks);
+    ros::Subscriber lidar_odom_sub;
+    if (enable_lidar_odom) {
+        lidar_odom_sub = paramNh.subscribe(lidar_odom_topic, 10, onLidarOdom);
+    }
 
     ros::spin();
     return 0;

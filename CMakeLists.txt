@@ -60,6 +60,7 @@ add_executable(xbot_positioning
         src/OrientationMeasurementModel.hpp
         src/OrientationMeasurementModel2.hpp
         src/PositionMeasurementModel.hpp
+        src/LidarOdometryMeasurementModel.hpp
         src/SystemModel.hpp)
 
 add_dependencies(xbot_positioning ${catkin_EXPORTED_TARGETS} ${${PROJECT_NAME}_EXPORTED_TARGETS})

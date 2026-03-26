@@ -11,6 +11,7 @@
 #include "OrientationMeasurementModel.hpp"
 #include "OrientationMeasurementModel2.hpp"
 #include "SpeedMeasurementModel.hpp"
+#include "LidarOdometryMeasurementModel.hpp"
 
 #include <kalman/ExtendedKalmanFilter.hpp>
 #include <kalman/UnscentedKalmanFilter.hpp>
@@ -32,6 +33,8 @@ namespace xbot {
         typedef xbot::positioning::OrientationMeasurementModel<T> OrientationModelT;
         typedef xbot::positioning::OrientationMeasurementModel2<T> OrientationModelT2;
         typedef xbot::positioning::SpeedMeasurementModel<T> SpeedModelT;
+        typedef xbot::positioning::LidarOdometryMeasurement<T> LidarOdometryMeasurementT;
+        typedef xbot::positioning::LidarOdometryMeasurementModel<T> LidarOdometryModelT;
 
         class xbot_positioning_core {
 
@@ -45,10 +48,12 @@ namespace xbot {
             const StateT &updateOrientation(double theta, double covariance);
             const StateT &updateOrientation2(double vx, double vy, double covariance);
             const StateT &updateSpeed(double vx, double vr, double covariance);
+            const StateT &updateLidarOdometry(double x, double y, double theta, double cov_x, double cov_y, double cov_theta);
             const StateT &getState();
             void setState(double px, double py, double theta, double vx, double vr);
             const Kalman::Covariance<StateT> &getCovariance();
             void setAntennaOffset(double offset_x, double offset_y);
+            void setLidarOffset(double offset_x, double offset_y);
 
         public:
             Kalman::ExtendedKalmanFilter<StateT> ekf{};
@@ -63,6 +68,8 @@ namespace xbot {
             OrientationMeasurementT orient_m{};
             OrientationMeasurementT2 orient_m2{};
             SpeedMeasurementT speed_m{};
+            LidarOdometryModelT lm{};
+            LidarOdometryMeasurementT lidar_m{};
         };
     }
 }

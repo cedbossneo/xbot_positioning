@@ -1,0 +1,63 @@
+# slam_toolbox async configuration for outdoor lawnmower with sparse features
+
+# Solver
+solver_plugin: solver_plugins::CeresSolver
+ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+ceres_preconditioner: SCHUR_JACOBI
+ceres_trust_strategy: LEVENBERG_MARQUARDT
+ceres_dogleg_type: TRADITIONAL_DOGLEG
+ceres_loss_function: None
+
+# Scan matching
+resolution: 0.1
+max_laser_range: 6.0
+minimum_travel_distance: 0.5
+minimum_travel_heading: 0.5
+scan_buffer_size: 10
+scan_buffer_maximum_scan_distance: 10.0
+use_scan_matching: true
+use_scan_barycenter: true
+minimum_time_interval: 0.5
+
+# Correlation parameters (scan matcher search)
+# Smaller search window = less room for scan matcher to wander into wrong matches
+# Important for sparse environments (few obstacles)
+correlation_search_space_dimension: 0.3
+correlation_search_space_resolution: 0.01
+correlation_search_space_smear_deviation: 0.03
+
+# Loop closure
+do_loop_closing: true
+loop_search_maximum_distance: 8.0
+loop_match_minimum_chain_size: 5
+loop_match_maximum_variance_coarse: 3.0
+loop_match_minimum_response_coarse: 0.35
+loop_match_minimum_response_fine: 0.5
+
+# Fine matching
+fine_search_angle_offset: 0.00349
+coarse_search_angle_offset: 0.349
+coarse_angle_resolution: 0.0174533
+
+# Frames — slam_toolbox uses a fully isolated TF subtree:
+#   slam_map -> slam_odom -> base_link_odom -> base_laser_slam
+# The bridge feeds EKF pose as slam_odom -> base_link_odom, and reads
+# slam_map -> base_link_odom to get SLAM's estimate. The bridge then
+# publishes map -> odom (identity) for the real navigation TF chain.
+odom_frame: slam_odom
+map_frame: slam_map
+base_frame: base_link_odom
+
+# Performance
+transform_timeout: 0.2
+tf_buffer_duration: 30.0
+map_update_interval: 2.0
+throttle_scans: 1
+enable_interactive_mode: false
+
+# Mode: mapping = continuously build and refine map
+# (localization = freeze map, only localize against it)
+mode: mapping
+
+# Stack size for matcher
+stack_size_to_use: 40000000

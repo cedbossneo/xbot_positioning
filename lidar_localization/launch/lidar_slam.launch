@@ -1,0 +1,45 @@
+<!-- lidar_localization/launch/lidar_slam.launch -->
+<launch>
+  <arg name="enable" default="true"/>
+  <arg name="scan_topic" default="/scan"/>
+
+  <!-- slam_toolbox async node -->
+  <node pkg="slam_toolbox" type="async_slam_toolbox_node" name="slam_toolbox" output="screen">
+    <rosparam file="$(find lidar_localization)/config/slam_toolbox_params.yaml" command="load"/>
+    <remap from="scan" to="scan_filtered"/>
+  </node>
+
+  <!-- Bridge node: GPS-gated scan filter + odom TF + pose conversion -->
+  <node name="lidar_slam_bridge" pkg="lidar_localization" type="lidar_slam_bridge_node" output="screen">
+    <param name="enable" value="$(arg enable)"/>
+    <param name="scan_topic" value="$(arg scan_topic)"/>
+    <param name="max_scan_range" value="6.0"/>
+    <param name="ground_height_threshold" value="-0.1"/>
+    <param name="default_lidar_covariance" value="500.0"/>
+    <param name="tilt_suppress_threshold" value="0.35"/>
+    <param name="yaw_rate_suppress_threshold" value="0.3"/>
+    <param name="map_file_path" value="/var/lib/lidar_map/lawn_map"/>
+    <!-- LiDAR mounting offset from base_link (rotation center at rear wheels) -->
+    <param name="lidar_offset_x" value="0.3"/>
+    <param name="lidar_offset_y" value="0.0"/>
+    <param name="lidar_offset_z" value="0.18"/>
+
+    <remap from="~imu_in" to="/imu_in"/>
+    <remap from="~xb_pose_in" to="/ll/position/gps"/>
+  </node>
+
+  <!-- Persistent obstacle tracker: detects static obstacles, adds to mowing map -->
+  <node name="obstacle_tracker" pkg="lidar_localization" type="obstacle_tracker_node" output="screen">
+    <param name="enable" value="$(arg enable)"/>
+    <param name="max_scan_range" value="6.0"/>
+    <param name="confirm_duration" value="60.0"/>
+    <param name="remove_duration" value="600.0"/>
+    <param name="min_radius" value="0.15"/>
+    <param name="max_radius" value="2.0"/>
+    <param name="cluster_merge_distance" value="2.0"/>
+    <param name="observation_ratio" value="0.5"/>
+    <param name="safety_margin" value="0.15"/>
+    <param name="max_observation_range" value="4.0"/>
+    <remap from="scan" to="/scan"/>
+  </node>
+</launch>

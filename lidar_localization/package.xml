@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>lidar_localization</name>
+  <version>0.2.0</version>
+  <description>LiDAR SLAM bridge for slam_toolbox integration with GPS-based positioning</description>
+  <maintainer email="cedric@example.com">Cedric</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>xbot_msgs</depend>
+  <depend>slam_toolbox_msgs</depend>
+  <depend>mower_map</depend>
+  <depend>xbot_rpc</depend>
+  <depend>visualization_msgs</depend>
+
+  <exec_depend>slam_toolbox</exec_depend>
+
+  <build_depend>rostest</build_depend>
+  <build_depend>rosunit</build_depend>
+</package>
